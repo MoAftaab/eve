@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: eve_healthcare
+      POSTGRES_USER: eve
+      POSTGRES_PASSWORD: eve_dev_password
+    ports: ["5432:5432"]
+    # PostgreSQL 18 uses a versioned PGDATA directory under this parent path.
+    # Mounting the parent keeps the database volume compatible with the image's
+    # current layout and avoids the PostgreSQL 18 startup error for /data mounts.
+    volumes: ["eve_pgdata:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eve -d eve_healthcare"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  api:
+    build: ./backend
+    environment:
+      EVE_DATABASE_URL: postgresql+psycopg://eve:eve_dev_password@db:5432/eve_healthcare
+      EVE_REDIS_URL: redis://redis:6379/0
+      EVE_JWT_SECRET: local-only-change-me
+      EVE_CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+    ports: ["8000:8000"]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+  worker:
+    build: ./backend
+    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=info
+    environment:
+      EVE_DATABASE_URL: postgresql+psycopg://eve:eve_dev_password@db:5432/eve_healthcare
+      EVE_REDIS_URL: redis://redis:6379/0
+      EVE_JWT_SECRET: local-only-change-me
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+  frontend:
+    build: ./frontend
+    ports: ["5173:80"]
+    depends_on: [api]
+volumes:
+  eve_pgdata:

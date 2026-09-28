@@ -1,0 +1,56 @@
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { api, Booking, Centre, clearSession, DiagnosticTest, saveSession, User } from "./api";
+
+type TokenResponse = { access_token: string; user: User };
+type Page<T> = { items: T[]; meta: { total: number } };
+
+function App() {
+  const [user, setUser] = useState<User | null>(() => JSON.parse(sessionStorage.getItem("eve_user") ?? "null"));
+  if (!user) return <AuthScreen onAuthenticated={(session) => { saveSession(session.access_token, session.user); setUser(session.user); }} />;
+  return <Dashboard user={user} onLogout={() => { clearSession(); setUser(null); }} />;
+}
+
+function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: TokenResponse) => void }) {
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setError(""); setLoading(true);
+    try {
+      const session = await api<TokenResponse>(`/auth/${mode === "login" ? "login" : "signup"}`, { method: "POST", body: JSON.stringify({ email, password, ...(mode === "signup" ? { full_name: fullName } : {}) }) });
+      onAuthenticated(session);
+    } catch (err) { setError(err instanceof Error ? err.message : "Unable to authenticate"); }
+    finally { setLoading(false); }
+  }
+  return <main className="auth-shell">
+    <section className="auth-art"><div className="brand-mark">+</div><p className="eyebrow">EVE HEALTHCARE</p><h1>Care that feels considered.</h1><p className="muted-light">Find trusted diagnostic centres, choose the right test, and keep every appointment in one calm place.</p><div className="trust-note"><span>✓</span><span>Secure booking journey with clear payment status</span></div></section>
+    <section className="auth-panel"><div className="mobile-brand"><div className="brand-mark small">+</div><span>EVE HEALTHCARE</span></div><p className="eyebrow">WELCOME BACK</p><h2>{mode === "login" ? "Your health, organised." : "Start your care journey."}</h2><p className="muted">{mode === "login" ? "Sign in to manage your appointments." : "Create an account in less than a minute."}</p>
+      <form onSubmit={submit} className="stack-form">{mode === "signup" && <label>Full name<input value={fullName} onChange={(e) => setFullName(e.target.value)} required minLength={2} placeholder="Your full name" /></label>}<label>Email address<input value={email} onChange={(e) => setEmail(e.target.value)} required type="email" placeholder="you@example.com" /></label><label>Password<input value={password} onChange={(e) => setPassword(e.target.value)} required type="password" minLength={8} placeholder="At least 8 characters" /></label>{error && <div className="alert error" role="alert">{error}</div>}<button className="button primary full" disabled={loading}>{loading ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}</button></form>
+      <button className="text-button" onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(""); }}>{mode === "login" ? "New here? Create an account" : "Already have an account? Sign in"}</button>
+    </section></main>;
+}
+
+function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const [tab, setTab] = useState<"explore" | "bookings">("explore");
+  const [centres, setCentres] = useState<Centre[]>([]); const [tests, setTests] = useState<DiagnosticTest[]>([]); const [bookings, setBookings] = useState<Booking[]>([]);
+  const [selectedTest, setSelectedTest] = useState<DiagnosticTest | null>(null); const [appointment, setAppointment] = useState(""); const [outcome, setOutcome] = useState<"SUCCESS" | "FAILED">("SUCCESS");
+  const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [toast, setToast] = useState(""); const [working, setWorking] = useState(false);
+  const centreMap = useMemo(() => new Map(centres.map((centre) => [centre.id, centre])), [centres]);
+  async function load() { setLoading(true); setError(""); try { const [centrePage, testPage, bookingPage] = await Promise.all([api<Page<Centre>>("/centres"), api<Page<DiagnosticTest>>("/tests"), api<Page<Booking>>("/bookings")]); setCentres(centrePage.items); setTests(testPage.items); setBookings(bookingPage.items); } catch (err) { setError(err instanceof Error ? err.message : "Unable to load your dashboard"); } finally { setLoading(false); } }
+  useEffect(() => { void load(); }, []);
+  async function bookAndPay(event: FormEvent) { event.preventDefault(); if (!selectedTest || !appointment) return; setWorking(true); setError(""); try { const booking = await api<Booking>("/bookings", { method: "POST", body: JSON.stringify({ test_id: selectedTest.id, appointment_at: new Date(appointment).toISOString() }) }); await api("/payments/", { method: "POST", body: JSON.stringify({ booking_id: booking.id, idempotency_key: crypto.randomUUID(), outcome }) }); setToast(outcome === "SUCCESS" ? "Appointment confirmed." : "Payment failed. You can review the failed booking below."); setSelectedTest(null); setAppointment(""); await load(); setTab("bookings"); } catch (err) { setError(err instanceof Error ? err.message : "Unable to complete booking"); } finally { setWorking(false); } }
+  async function cancel(bookingId: string) { setWorking(true); try { await api(`/bookings/${bookingId}/cancel`, { method: "POST" }); setToast("Booking cancelled."); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to cancel booking"); } finally { setWorking(false); } }
+  return <div className="app-shell"><header className="topbar"><div className="brand"><div className="brand-mark small">+</div><span>EVE <b>HEALTHCARE</b></span></div><nav><button className={tab === "explore" ? "nav-link active" : "nav-link"} onClick={() => setTab("explore")}>Find a test</button><button className={tab === "bookings" ? "nav-link active" : "nav-link"} onClick={() => setTab("bookings")}>My bookings <span className="nav-count">{bookings.length}</span></button></nav><div className="user-menu"><span className="avatar">{user.full_name.slice(0, 1).toUpperCase()}</span><span className="user-name">{user.full_name}</span><button className="icon-button" aria-label="Sign out" onClick={onLogout}>↗</button></div></header>
+    <main className="content"><section className="welcome"><div><p className="eyebrow">{tab === "explore" ? "YOUR CARE COMPANION" : "YOUR APPOINTMENTS"}</p><h1>{tab === "explore" ? <>Make time for <em>yourself.</em></> : <>Everything in <em>one place.</em></>}</h1><p className="muted">{tab === "explore" ? "Book a diagnostic test at a centre that works for you." : "Track upcoming and past diagnostic appointments."}</p></div><div className="wellness-card"><span className="sun">✦</span><div><strong>Small steps count</strong><span>Stay on top of your health today.</span></div></div></section>
+      {toast && <div className="alert success" role="status">{toast}<button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}{error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")} aria-label="Dismiss">×</button></div>}
+      {loading ? <div className="loading-grid"><div className="skeleton large"/><div className="skeleton large"/><div className="skeleton large"/></div> : tab === "explore" ? <><div className="section-heading"><div><h2>Available tests</h2><p className="muted">Choose what you need, when you need it.</p></div><span className="result-count">{tests.length} tests · {centres.length} centres</span></div><div className="test-grid">{tests.map((test) => <article className="test-card" key={test.id}><div className="card-top"><span className="test-icon">⌁</span><span className="availability">Available</span></div><h3>{test.name}</h3><p>{test.description || "A carefully administered diagnostic test at a trusted centre."}</p><div className="test-meta"><span>{centreMap.get(test.centre_id)?.name ?? "Diagnostic centre"}</span><strong>{test.currency} {Number(test.price).toLocaleString()}</strong></div><button className="button secondary full" onClick={() => setSelectedTest(test)}>Book this test <span>→</span></button></article>)}</div>{tests.length === 0 && <EmptyState text="No diagnostic tests are available right now." />}</> : <Bookings bookings={bookings} centreMap={centreMap} tests={tests} onCancel={cancel} working={working} />}
+    </main>{selectedTest && <div className="modal-backdrop" role="presentation"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="booking-title"><button className="close-button" onClick={() => setSelectedTest(null)} aria-label="Close">×</button><p className="eyebrow">NEW APPOINTMENT</p><h2 id="booking-title">{selectedTest.name}</h2><p className="muted">{centreMap.get(selectedTest.centre_id)?.name} · {centreMap.get(selectedTest.centre_id)?.location}</p><form onSubmit={bookAndPay} className="stack-form"><label>Appointment date and time<input type="datetime-local" value={appointment} onChange={(e) => setAppointment(e.target.value)} required /></label><label>Payment simulation<select value={outcome} onChange={(e) => setOutcome(e.target.value as "SUCCESS" | "FAILED")}><option value="SUCCESS">Simulate successful payment</option><option value="FAILED">Simulate failed payment</option></select></label><div className="price-row"><span>Total to pay</span><strong>{selectedTest.currency} {Number(selectedTest.price).toLocaleString()}</strong></div><button className="button primary full" disabled={working}>{working ? "Processing…" : "Confirm and pay"}</button></form></div></div>}</div>;
+}
+
+function Bookings({ bookings, centreMap, tests, onCancel, working }: { bookings: Booking[]; centreMap: Map<string, Centre>; tests: DiagnosticTest[]; onCancel: (id: string) => void; working: boolean }) { if (!bookings.length) return <EmptyState text="You do not have any bookings yet." />; return <div className="booking-list">{bookings.map((booking) => { const test = tests.find((item) => item.id === booking.test_id); return <article className="booking-row" key={booking.id}><div className="booking-date"><strong>{new Date(booking.appointment_at).toLocaleDateString(undefined, { day: "2-digit" })}</strong><span>{new Date(booking.appointment_at).toLocaleDateString(undefined, { month: "short" })}</span></div><div className="booking-info"><h3>{test?.name ?? "Diagnostic test"}</h3><p>{centreMap.get(booking.centre_id)?.name ?? "Diagnostic centre"} · {new Date(booking.appointment_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</p></div><span className={`status ${booking.status.toLowerCase()}`}>{booking.status}</span>{booking.status === "PENDING" && <button className="text-button danger" disabled={working} onClick={() => onCancel(booking.id)}>Cancel</button>}</article>; })}</div> }
+function EmptyState({ text }: { text: string }) { return <div className="empty-state"><div className="empty-icon">✦</div><h3>{text}</h3><p className="muted">Check back soon or explore another option.</p></div>; }
+
+export default App;
